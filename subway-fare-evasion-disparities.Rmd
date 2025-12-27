@@ -1,0 +1,328 @@
+---
+title: "Racial Disparities in NYC Subway Fare Evasion Arrests"
+subtitle: "An Analysis of Public Defender Client Data (2016)"
+author: "Pranav Mehta"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    number_sections: yes
+    highlight: tango
+    theme: default
+    fig_caption: yes
+    df_print: tibble
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+    number_sections: yes
+urlcolor: blue
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Introduction
+
+Subway fare evasion enforcement in New York City has drawn scrutiny for potential racial disparities in policing. This analysis examines microdata on fare evasion arrests from two public defender organizations—Brooklyn Defender Services (BDS) and the Legal Aid Society (LAS)—to document the racial composition of arrests and explore variation across subway stations.
+
+This analysis was completed as part of the *Data Analysis for Policy Research using R* course at Columbia University, taught by Prof. Harold Stolper.
+
+# Data and Methods
+
+## Data Sources
+
+The analysis combines arrest records from two public defender organizations in 2016:
+
+- **Brooklyn Defender Services (BDS)**: 2,246 arrest records with demographic information, ZIP code, and arrest location
+- **Legal Aid Society (LAS)**: 1,965 arrest records with similar demographics plus case dismissal outcomes
+
+Each row represents an individual arrest event tied to one person and one subway station. These datasets capture clients who received representation through BDS or LAS; individuals with private attorneys or other public defenders are not included.
+
+```{r load-libraries}
+library(fastDummies)
+library(tidyverse)
+library(forcats)
+```
+
+## Loading and Inspecting the Data
+
+```{r load-data}
+arrests_bds <- read_csv("microdata_BDS_inclass.csv", na = "")
+arrests_las <- read_csv("microdata_LAS_inclass.csv", na = "")
+
+str(arrests_bds, give.attr = FALSE) 
+str(arrests_las, give.attr = FALSE)
+```
+
+## Data Limitations
+
+Several limitations should be noted upfront:
+
+1. **Selection bias**: Both datasets only capture clients represented by these two organizations, not all fare evasion arrestees in NYC.
+
+2. **Inconsistent race/ethnicity coding**: BDS records race and ethnicity as separate variables, while LAS partially merges Hispanic identity into the race variable. This requires careful harmonization.
+
+3. **Missing data**: Both datasets contain missing values in demographic fields (e.g., ~228 missing race entries in LAS, ~157 in BDS). If missingness is non-random, this could bias results.
+
+# Data Cleaning
+
+## Harmonizing Race and Ethnicity Variables
+
+The two datasets code race and ethnicity differently. To enable combined analysis, I create a consistent `race_eth` variable with mutually exclusive categories.
+
+### BDS Data Cleaning
+
+```{r clean-bds}
+arrests_bds <- arrests_bds %>% 
+  mutate(race = as.factor(race), 
+         ethnicity = as.factor(ethnicity))
+
+# Clean race variable
+arrests_bds.clean <- arrests_bds %>% 
+  mutate(race_clean = recode(race,
+                             "0" = NA_character_, 
+                             "Unknown" = NA_character_, 
+                             "Am Indian" = "Other")) %>% 
+  mutate(race_clean = fct_relevel(race_clean,
+                                  "Asian/Pacific Islander",
+                                  "Black",
+                                  "White",
+                                  "Other"))
+
+# Clean ethnicity variable
+arrests_bds.clean <- arrests_bds.clean %>% 
+  mutate(ethnicity_clean = recode(ethnicity,
+                                  '0' = NA_character_,
+                                  'Other' = 'Non-Hispanic'))
+
+# Create combined race/ethnicity variable
+arrests_bds.clean <- arrests_bds.clean %>% 
+  mutate(race_eth = if_else(ethnicity_clean %in% "Hispanic",
+                            ethnicity_clean,
+                            race_clean)) %>% 
+  mutate(race_eth = recode(race_eth,
+                           "White" = "Non-Hispanic White",
+                           "Black" = "Non-Hispanic Black")) %>%
+  mutate(race_eth = factor(race_eth,
+                           levels = c("Asian/Pacific Islander",
+                                      "Hispanic",
+                                      "Non-Hispanic Black",
+                                      "Non-Hispanic White",
+                                      "Other")))
+```
+
+### LAS Data Cleaning
+
+```{r clean-las}
+arrests_las <- arrests_las %>% 
+  mutate(race = as.factor(las_race_key), 
+         ethnicity = as.factor(hispanic_flag))
+
+arrests_las.clean <- arrests_las %>% 
+  mutate(race_eth = recode(las_race_key,
+                           "Asian or Pacific Islander" = "Asian/Pacific Islander",
+                           "Unknown" = NA_character_,
+                           "Latino" = "Hispanic",
+                           "White" = "Non-Hispanic White",
+                           "Black" = "Non-Hispanic Black")) %>% 
+  mutate(race_eth = ifelse(hispanic_flag == "Y", "Hispanic", race_eth)) %>% 
+  mutate(race_eth = factor(race_eth,
+                           levels = c("Asian/Pacific Islander",
+                                      "Hispanic",
+                                      "Non-Hispanic Black",
+                                      "Non-Hispanic White",
+                                      "Other")))
+```
+
+## Combining the Datasets
+
+```{r combine-data}
+arrests_bds.clean <- arrests_bds.clean %>% mutate(pd = "bds")
+arrests_las.clean <- arrests_las.clean %>% mutate(pd = "las")
+
+arrests.clean <- bind_rows(arrests_bds.clean, arrests_las.clean) %>%
+  mutate(pd = as.factor(pd),
+         st_id = as.factor(st_id),
+         loc2 = as.factor(loc2)) %>% 
+  select(pd, race_eth, age, male, st_id, loc2, dismissal)
+
+summary(arrests.clean)
+```
+
+The combined dataset contains `r nrow(arrests.clean)` fare evasion arrest records.
+
+```{r save-data, eval=FALSE}
+save(arrests.clean, file = "arrests.clean.RData")
+```
+
+# Descriptive Statistics by Race/Ethnicity
+
+## Arrest Counts and Proportions
+
+```{r arrest-counts}
+arrests.clean %>% 
+  count(race_eth, sort = TRUE)
+```
+
+The racial composition of arrests, excluding missing values:
+
+```{r arrest-proportions}
+prop.table(table(arrests.clean$race_eth)) %>% 
+  round(2) %>% 
+  as.data.frame() %>% 
+  arrange(desc(Freq)) %>% 
+  rename(race_eth = Var1)
+```
+
+Non-Hispanic Black individuals comprise the largest share of arrests, followed by Hispanic individuals. Together, these two groups account for the vast majority of fare evasion arrests in this sample.
+
+## Demographics and Case Outcomes by Race/Ethnicity
+
+```{r demographics-by-race}
+race_eth_stats <- arrests.clean %>%
+  group_by(race_eth) %>%
+  summarise(
+    n = n(), 
+    mean_age = mean(age, na.rm = TRUE),
+    mean_male = mean(male, na.rm = TRUE),
+    mean_dismissal = mean(dismissal, na.rm = TRUE),
+    n_dismissal = sum(!is.na(dismissal))
+  )
+
+knitr::kable(race_eth_stats, digits = 2)
+```
+
+Key findings from this table:
+
+- Arrests disproportionately involve young men, especially Black and Hispanic individuals
+- Dismissal rates vary by race/ethnicity: White and Asian/Pacific Islander defendants appear more likely to have cases dismissed compared to Black or Hispanic defendants
+- The group with missing demographic data (NA) shows both younger average age and much higher dismissal rates, suggesting possible non-random missingness
+
+# Station-Level Analysis
+
+## Creating Race/Ethnicity Indicators
+
+```{r create-dummies}
+arrests.clean <- dummy_cols(arrests.clean, select_columns = "race_eth")
+
+arrests.clean %>%
+  summarise(across(starts_with("race_eth_"),
+                   ~ round(mean(.x, na.rm = TRUE), 2)))
+```
+
+## Top Stations by Arrest Volume
+
+```{r top-stations}
+arrests_stations <- arrests.clean %>%
+  group_by(st_id, loc2) %>%
+  summarise(
+    total_arrests = n(),
+    black_arrests = sum(`race_eth_Non-Hispanic Black`, na.rm = TRUE),
+    white_arrests = sum(`race_eth_Non-Hispanic White`, na.rm = TRUE),
+    hispanic_arrests = sum(`race_eth_Hispanic`, na.rm = TRUE),
+    asian_arrests = sum(`race_eth_Asian/Pacific Islander`, na.rm = TRUE),
+    other_arrests = sum(`race_eth_Other`, na.rm = TRUE),
+    na_arrests = sum(`race_eth_NA`, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_arrests))
+
+knitr::kable(head(arrests_stations, 10),
+             caption = "Top 10 Stations by Total Fare Evasion Arrests")
+```
+
+## Black and Hispanic Arrest Shares by Station
+
+For stations with at least 50 arrests, I calculate the share of arrests involving Black and Hispanic individuals (excluding cases with missing race/ethnicity data):
+
+```{r bh-share-by-station}
+arrests_stations_top <- arrests.clean %>%
+  group_by(loc2) %>%
+  summarise(
+    station_total = n(),
+    n_bh = sum(`race_eth_Non-Hispanic Black`, na.rm = TRUE) +
+           sum(`race_eth_Hispanic`, na.rm = TRUE),
+    n_na = sum(`race_eth_NA`, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(station_total >= 50) %>%
+  mutate(
+    denom = station_total - n_na,
+    sh_bh = if_else(denom > 0, n_bh / denom, NA_real_)
+  ) %>%
+  select(loc2, station_total, n_bh, n_na, sh_bh) %>%
+  arrange(sh_bh)
+
+knitr::kable(arrests_stations_top, 
+             digits = 2,
+             caption = "Black and Hispanic Share of Arrests by Station (≥50 arrests)")
+```
+
+At most stations with substantial arrest activity, over 80% of arrestees (excluding NA cases) are Black or Hispanic. Several stations—particularly along the 3 and C lines in Brooklyn (e.g., Rockaway Ave, Sutter Av–Rutland Rd, Utica Ave)—show shares above 95%, with some reaching nearly 100%.
+
+Stations with the highest Black/Hispanic shares cluster in central Brooklyn neighborhoods that are historically majority-Black and Latino. Stations with somewhat lower shares (70–80%) tend to be in more mixed neighborhoods near Williamsburg or Downtown Brooklyn.
+
+# Visualizations
+
+## Distribution of Arrests by Race/Ethnicity
+
+```{r viz-overall, fig.cap="Distribution of Fare Evasion Arrests by Race/Ethnicity"}
+arrests.clean %>% 
+  filter(!is.na(race_eth)) %>%
+  ggplot(aes(x = fct_infreq(race_eth),
+             y = ..prop.., group = 1)) + 
+  geom_bar(fill = "steelblue") + 
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(x = "Race/Ethnicity",
+       y = "Proportion of Arrests",
+       title = "Fare Evasion Arrests by Race/Ethnicity") +
+  theme_minimal()
+```
+
+## Arrests by Race/Ethnicity at High-Volume Stations
+
+```{r viz-stations, fig.width=10, fig.height=6, fig.cap="Racial Composition of Arrests at High-Volume Stations"}
+arrests_stations_race_top <- arrests.clean %>%  
+  group_by(loc2) %>% 
+  mutate(st_arrests = n()) %>% 
+  ungroup() %>% 
+  group_by(loc2, race_eth) %>%
+  summarise(arrests = n(), 
+            st_arrests = first(st_arrests),
+            .groups = "drop") %>% 
+  arrange(desc(st_arrests)) %>% 
+  filter(st_arrests > 100)
+
+arrests_stations_race_top %>% 
+  ggplot(aes(x = reorder(loc2, -st_arrests),
+             y = arrests,
+             fill = race_eth)) + 
+  geom_bar(stat = "identity") + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Station",
+       y = "Number of Arrests",
+       fill = "Race/Ethnicity",
+       title = "Fare Evasion Arrests at Stations with >100 Total Arrests")
+```
+
+# Conclusions
+
+This analysis of 4,211 fare evasion arrest records from two public defender organizations reveals stark racial disparities:
+
+1. **Disproportionate impact**: Black and Hispanic individuals together comprise the overwhelming majority of fare evasion arrests, far exceeding their share of NYC's population or subway ridership.
+
+2. **Geographic concentration**: The highest concentrations of arrests occur at stations in historically Black and Latino neighborhoods in central Brooklyn, where Black/Hispanic arrest shares often exceed 95%.
+
+3. **Differential outcomes**: Preliminary evidence suggests that White and Asian defendants may be more likely to have their cases dismissed, though this requires further investigation controlling for other factors.
+
+4. **Data limitations**: These findings are based on public defender clients only and do not capture all fare evasion enforcement. Missing demographic data may also introduce bias if missingness is correlated with race or case outcomes.
+
+These patterns raise important questions about the equity of fare evasion enforcement and whether policing resources are being deployed in ways that disproportionately burden communities of color.
+
+---
+
+*Data sources: Brooklyn Defender Services and Legal Aid Society client records (2016)*
